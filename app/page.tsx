@@ -18,7 +18,7 @@ type BlogPost = {
 };
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_BLOG_API_BASE_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_BLOG_API_BASE_URL || "https://blog-backend-production-34cf.up.railway.app";
 
 export default function BlogGenerationPage() {
   const [topic, setTopic] = useState("");
