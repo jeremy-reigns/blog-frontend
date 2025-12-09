@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
 
 type SeoMeta = {
   title?: string;
@@ -18,11 +20,11 @@ type BlogPost = {
 };
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_BLOG_API_BASE_URL || "https://blog-backend-production-34cf.up.railway.app";
+  process.env.NEXT_PUBLIC_BLOG_API_BASE_URL ||
+  "https://blog-backend-production-34cf.up.railway.app";
 
-/* -------------------------------------------------------------------------- */
-/*                Replace [Author Name] + [Date] inside Markdown               */
-/* -------------------------------------------------------------------------- */
+/* ---------------------------- Clean Markdown ---------------------------- */
+
 function injectMetadata(md: string): string {
   const today = new Date().toISOString().slice(0, 10);
   return md
@@ -30,14 +32,42 @@ function injectMetadata(md: string): string {
     .replace(/\[Date\]/gi, today);
 }
 
-/* -------------------------------------------------------------------------- */
-/*                        Clean Preview Text (500 chars)                       */
-/* -------------------------------------------------------------------------- */
+function cleanMarkdown(md: string): string {
+  if (!md) return "";
+  let text = md.trim();
+
+  // Remove summary headers before first heading
+  const firstH1 = text.indexOf("# ");
+  if (firstH1 > 0) text = text.substring(firstH1);
+
+  // Remove noise lines
+  text = text.replace(/^Generated.*$/gim, "");
+  text = text.replace(/^Hide$/gim, "");
+
+  // Remove duplicate headings
+  const lines = text.split("\n");
+  const seen = new Set<string>();
+  const filtered: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("# ")) {
+      if (seen.has(line.trim())) continue;
+      seen.add(line.trim());
+    }
+    filtered.push(line);
+  }
+
+  text = filtered.join("\n");
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  return injectMetadata(text);
+}
+
+/* ---------------------------- Preview Cleaner --------------------------- */
 function createPreview(markdown: string, length = 500): string {
   const cleaned = markdown
-    .replace(/[#_*`>-]/g, "")   // remove markdown symbols
-    .replace(/\n+/g, " ")       // remove newlines
-    .replace(/\s+/g, " ")       // collapse spaces
+    .replace(/[#_*`>-\[\]]/g, "")
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
   return cleaned.length > length
@@ -45,13 +75,15 @@ function createPreview(markdown: string, length = 500): string {
     : cleaned;
 }
 
-/* -------------------------------------------------------------------------- */
-/*                              Main Component                                 */
-/* -------------------------------------------------------------------------- */
+/* ------------------------------ MAIN PAGE ------------------------------- */
+
 export default function GeneratedArticlesPage() {
   const [blogs, setBlogs] = useState<BlogPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const [summary, setSummary] = useState<string>("");
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
 
   useEffect(() => {
     async function loadBlogs() {
@@ -59,8 +91,8 @@ export default function GeneratedArticlesPage() {
         const res = await fetch(`${API_BASE_URL}/blogs`);
         const data = await res.json();
         setBlogs(data.reverse());
-      } catch (err) {
-        console.error("Error loading blogs:", err);
+      } catch (e) {
+        console.error("Error loading blogs:", e);
       } finally {
         setLoading(false);
       }
@@ -69,7 +101,46 @@ export default function GeneratedArticlesPage() {
     loadBlogs();
   }, []);
 
-  /* ----------------------------- Loading State ----------------------------- */
+  /* ------------------------------ PDF Export ----------------------------- */
+  async function exportPDF(postId: string) {
+    const element = document.getElementById(`article-${postId}`);
+    if (!element) return;
+
+    const canvas = await html2canvas(element, { scale: 2 });
+    const imgData = canvas.toDataURL("image/png");
+
+    const pdf = new jsPDF("p", "mm", "a4");
+    const width = 210;
+    const height = (canvas.height * width) / canvas.width;
+
+    pdf.addImage(imgData, "PNG", 0, 0, width, height);
+    pdf.save(`article-${postId}.pdf`);
+  }
+
+  /* --------------------- AI LinkedIn Summary Generator ------------------- */
+  async function generateLinkedInSummary(post: BlogPost) {
+    setSummary("Generating...");
+    setShowSummaryModal(true);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/summarize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: cleanMarkdown(post.final_post),
+          style: "linkedin",
+        }),
+      });
+
+      const data = await res.json();
+      setSummary(data.summary || "Error: No summary received.");
+    } catch (err) {
+      setSummary("Error generating summary.");
+      console.error(err);
+    }
+  }
+
+  /* ------------------------------ Loading UI ----------------------------- */
   if (loading) {
     return (
       <main className="min-h-screen flex justify-center items-center text-gray-500">
@@ -82,111 +153,100 @@ export default function GeneratedArticlesPage() {
     <main className="min-h-screen w-full bg-white flex flex-col items-center px-6 py-16">
       <div className="w-full max-w-4xl space-y-12">
 
-        {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900">
-            Generated Articles
-          </h1>
-          <p className="text-gray-600 mt-3 max-w-2xl mx-auto">
-            All blogs generated using your automated pipeline.
-          </p>
+          <h1 className="text-4xl font-bold text-gray-900">Generated Articles</h1>
+          <p className="text-gray-600 mt-3">All blogs generated using your automated pipeline.</p>
         </div>
 
-        {/* Empty State */}
         {blogs.length === 0 && (
-          <p className="text-center text-gray-600">
-            No articles found. Try generating one on the main page!
-          </p>
+          <p className="text-center text-gray-600">No articles yet.</p>
         )}
 
-        {/* Blog List */}
         <div className="space-y-6">
           {blogs.map((post) => {
             const expanded = expandedId === post.id;
+            const cleaned = cleanMarkdown(post.final_post);
 
             return (
-              <div
-                key={post.id}
-                className="bg-white border border-gray-200 rounded-xl shadow-sm p-6"
-              >
+              <div key={post.id} className="bg-white border border-gray-200 rounded-xl shadow-sm p-6">
                 <div className="flex justify-between items-start">
-                  <div className="pr-4">
-                    {/* Title */}
-                    <h2 className="text-xl font-semibold text-gray-900 leading-snug">
-                      {post.seo?.title || post.topic}
-                    </h2>
-
-                    {/* Timestamp */}
-                    <p className="text-gray-500 text-sm mt-1">
+                  <div>
+                    <h2 className="text-xl font-semibold">{post.seo?.title || post.topic}</h2>
+                    <p className="text-sm text-gray-500">
                       Generated {new Date(post.created_at).toLocaleString()}
                     </p>
 
-                    {/* PREVIEW (cleaned version) */}
-                    <p className="text-gray-700 text-sm mt-3">
-                      {createPreview(injectMetadata(post.final_post))}
+                    <p className="text-gray-800 text-sm mt-3">
+                      {createPreview(cleaned)}
                     </p>
                   </div>
 
-                  {/* Toggle Button */}
                   <button
                     onClick={() => setExpandedId(expanded ? null : post.id)}
-                    className="
-                      text-sm border border-gray-700 rounded-md px-3 py-1
-                      bg-gray-700 text-white
-                      hover:bg-gray-800 transition
-                    "
+                    className="px-3 py-1 bg-gray-800 text-white rounded"
                   >
                     {expanded ? "Hide" : "Read"}
                   </button>
                 </div>
 
-                {/* ------------------------------ FULL ARTICLE ------------------------------ */}
+                {/* --- FULL ARTICLE --- */}
                 {expanded && (
-                  <div
-                    className="
-                      mt-6 prose max-w-none
+                  <div id={`article-${post.id}`} className="mt-6 prose prose-lg text-black">
+                    <ReactMarkdown>{cleaned}</ReactMarkdown>
 
-                      /* Headings */
-                      prose-headings:font-bold
-                      prose-h1:text-5xl prose-h1:text-blue-600 prose-h1:mt-10 prose-h1:mb-6
-                      prose-h2:text-4xl prose-h2:text-purple-600 prose-h2:mt-8 prose-h2:mb-4
-                      prose-h3:text-3xl prose-h3:text-pink-600 prose-h3:mt-6 prose-h3:mb-3
-                      prose-h4:text-2xl prose-h4:text-emerald-600 prose-h4:mt-4 prose-h4:mb-2
+                    <div className="flex gap-4 mt-6">
+                      <button
+                        onClick={() => exportPDF(post.id)}
+                        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                      >
+                        Save as PDF
+                      </button>
 
-                      /* Body */
-                      prose-p:text-gray-800 prose-p:leading-relaxed prose-p:my-4
-
-                      /* Lists */
-                      prose-ul:list-disc prose-ul:pl-6 prose-ul:my-4
-                      prose-li:my-2 prose-li:text-gray-800
-                      prose-ol:list-decimal prose-ol:pl-6 prose-ol:my-4
-
-                      /* Quotes */
-                      prose-blockquote:border-l-4
-                      prose-blockquote:border-gray-300
-                      prose-blockquote:pl-4
-                      prose-blockquote:italic
-                      prose-blockquote:text-gray-700
-
-                      /* Misc */
-                      prose-code:text-blue-700
-                      prose-strong:font-bold prose-strong:text-gray-900
-
-                      leading-loose tracking-wide text-black
-                      !opacity-100
-                    "
-                  >
-                    <ReactMarkdown>
-                      {injectMetadata(post.final_post)}
-                    </ReactMarkdown>
+                      <button
+                        onClick={() => generateLinkedInSummary(post)}
+                        className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                      >
+                        Generate LinkedIn Summary
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             );
           })}
         </div>
-
       </div>
+
+      {/* ------------------------ SUMMARY MODAL ------------------------ */}
+      {showSummaryModal && (
+        <div className="fixed inset-0 bg-black/50 flex justify-center items-center p-6">
+          <div className="bg-white w-full max-w-2xl rounded-lg p-6 shadow-lg space-y-4">
+            <h2 className="text-xl font-bold">LinkedIn Summary</h2>
+
+            <textarea
+              className="w-full h-48 border rounded p-3 text-gray-800"
+              value={summary}
+              readOnly
+            />
+
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 bg-gray-300 rounded"
+                onClick={() => setShowSummaryModal(false)}
+              >
+                Close
+              </button>
+
+              <button
+                className="px-4 py-2 bg-green-600 text-white rounded"
+                onClick={() => navigator.clipboard.writeText(summary)}
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
